@@ -1,0 +1,17 @@
+
+*error feedback delta sigma
+
+in 10 1    * comments
+10 out 1   * can 
+10 20 1    * now
+out 20 -1  * be added to
+20 in F    * the end of line
+
+.pre syms z * initials
+*NTF=1-F;
+.pre F=2/z-z^-2; * more initials
+*.pre k=1;
+.tf in out    *transfer function #1
+.tf out out  *transfer function #2
+.post z=tf('z',1); *also LTI object transfer functions
+

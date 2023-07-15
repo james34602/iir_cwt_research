@@ -1,0 +1,11 @@
+* Biquad filter
+in 1 g3
+1 2 H1
+2 3 H2
+2 1 g1
+3 1 g4
+3 1 s*c4
+.pre syms s g3 c1 a g4 g1 c4
+.pre H1=-1/(s*c1);
+.pre H2=a/s;
+.tf in 3

@@ -1,0 +1,20 @@
+* SVF filter
+in out1 d0
+in tmp1 c1
+tmp1 ff1 z
+ff1 tmp1 1
+ff1 out2 d1
+ff1 tmp2 c2
+tmp2 ff2 z
+ff2 tmp2 1
+ff2 out3 d2
+ff1 in -1
+ff2 in -1
+out1 out 1
+out2 out 1
+out3 out 1
+.pre syms z c1 c2 d0 d1 d2
+.tf in out1
+.tf in out2
+.tf in out3
+.tf in out

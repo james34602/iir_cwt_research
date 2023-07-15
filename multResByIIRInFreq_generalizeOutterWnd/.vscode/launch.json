@@ -1,0 +1,31 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: 模块",
+            "type": "python",
+            "request": "launch",
+            "justMyCode": true,
+            "module": "pthGrad",
+            /*"args": [
+                "-g",
+                "0",
+                "-m",
+                "modelparams\\3band_44100.json",
+                "-H",
+                "mirroring",
+                "-w",
+                "352",
+                "-D",
+                "-P",
+                "models\\MGM-v5-3Band-44100-BETA.pth",
+                "-t",
+                "-i",
+                "sgscSmall.wav"
+            ]*/
+        }
+    ]
+}

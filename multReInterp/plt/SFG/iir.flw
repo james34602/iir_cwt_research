@@ -1,0 +1,16 @@
+* IIR filter, see manual.pdf
+in out1 b0
+in ff1 z
+ff1 ff2 z
+ff1 out2 b1
+ff2 out3 b2
+ff1 in -a1
+ff2 in -a2
+out1 out 1
+out2 out 1
+out3 out 1
+.pre syms z b0 b1 b2 a0 a1 a2
+.tf in out1
+.tf in out2
+.tf in out3
+.tf in out

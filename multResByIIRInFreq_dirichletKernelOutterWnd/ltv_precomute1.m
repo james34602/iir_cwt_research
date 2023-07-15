@@ -1,0 +1,499 @@
+function [coeff, f] = ltv_precomute1(fftLen, hop, fs, oct, order, HFSamplingLimit, gaussSigmaLimiting, cornerSmoothing, reqSynthesisWnd)
+addpath('../minFunc_2012/autoDif')
+addpath('../minFunc_2012/minFunc')
+addpath('../minFunc_2012/minFunc/compiled')
+addpath('gradients/')
+if nargin < 1
+    fs = 48000;
+    fftLen = 1024;
+    hop = 256;
+    oct = 64;
+    HFSamplingLimit = 1.5;
+    order = 2;
+    reqSynthesisWnd = 1;
+    gaussSigmaLimiting = 1;
+    cornerSmoothing = 1;
+end
+zp = 1;
+halfLen = getFFTHalfLen(fftLen);
+ovp = fftLen / hop;
+% number of points of pre and post padding used to set initial conditions
+prepad = 10;
+pospad = 42;
+% frequency bins grid (linear in this case) - pre and pos padding is added
+% poles of the IIR LTV Q FFT transform for the parameters above
+f = (0:1:fftLen/2)*fs/fftLen;
+% number of points of pre and post padding used to set initial conditions
+thetas1 = (0:(fftLen/2+pospad)-1);
+thetas1(1) = eps;
+thetas1 = [fliplr(thetas1(2 : prepad + 1)), thetas1];
+thetas1 = thetas1(1:fftLen/2+prepad+1);
+thetas1 = [thetas1, thetas1(length(thetas1)-1:-1:1)];
+thetas1 = thetas1(1 : halfLen + prepad + pospad - 1);
+% thetas1 = [thetas1(end-prepad+1:end), thetas1(1 : halfLen + pospad - 1)];
+%% Compute poles
+sigmas = (thetas1 ./ fftLen) ./ oct / pi * fftLen;
+if order == 2
+    [b, a, c1, c2] = gauss_precompute(sigmas);
+else
+    a = 1 - exp(-1 ./ (0.3 / oct .* thetas1.'));
+    b = [];
+    c1 = [];
+    c2 = [];
+end
+%% Pole limiting
+truWnd = hann(fftLen, 'periodic');
+chopedWnd = truWnd(halfLen : end);
+div = round(hop / (1 + HFSamplingLimit));
+halfWndLen = halfLen - 1;
+digw = linspace(0, pi - pi / halfWndLen, halfWndLen);
+digw(halfWndLen) = pi - pi / halfWndLen;
+cplxFreq = exp(1i*digw); % Digital frequency must be used for this calculation
+s = cplxFreq(div);
+if order == 2
+    bDeflated = s .* s .* b(:);
+    aDeflated = s .* (s + a(:, 2)) + a(:, 3);
+else
+    bDeflated = s .* a(:);
+    aDeflated = s - (1 - a(:));
+end
+hHopPtCplx = bDeflated ./ aDeflated;
+hHopPt = hHopPtCplx .* conj(hHopPtCplx) * chopedWnd(div);
+if reqSynthesisWnd
+    hHopPt = hHopPt * chopedWnd(div);
+end
+firstUndersampling = find((hHopPt(prepad + 1 : end - pospad + 1) * 2) <= 1, 1, 'first');
+if ~isempty(prepad + firstUndersampling - 1)
+    thetas1(prepad + firstUndersampling - 1 : halfLen) = thetas1(prepad + firstUndersampling - 1);
+    thetas1(1 : prepad) = thetas1(prepad * 2 + 1 : -1 : prepad + 2);
+    thetas1(halfLen + 1 : end) = thetas1(halfLen-1:-1:halfLen - prepad - pospad + 1);
+    if cornerSmoothing
+        % Eliminate oscillation around corner
+        time = zp * 0.026 * fftLen;
+        alpha = 1 / (1 + time);
+        [b2, a2] = butter(1, alpha);
+        thetas1 = filtfilt(b2, a2, thetas1);
+    end
+    %% Recompute poles
+    if gaussSigmaLimiting
+        if order == 2
+            sigmas = (thetas1 ./ fftLen) ./ oct / pi * fftLen;
+            [b, a, c1, c2] = gauss_precompute(sigmas);
+        else
+            a = 1 - exp(-1 ./ (0.3 / oct .* thetas1.'));
+        end
+    end
+end
+if abs(thetas1 - mean(thetas1)) < eps
+    flat = 1;
+else
+    flat = 0;
+end
+disp('First constant Q frequnecy that undersample ' + string(f(firstUndersampling)) + ' Hz')
+%% Compute reassignment frequency domain sample shifter
+phaseShifter1 = exp(1i * (2*pi*(0:halfLen-1)/fftLen).');
+phaseShifter2 = exp(-1i * (2*pi/fftLen).');
+phaseShifter3 = exp(1i * (2*pi/fftLen).');
+%% Obtain filterbank overall response
+tmp = zeros(fftLen, ovp - 1);
+corrF = [];
+for i = 1 : ovp - 1
+    stepSize = mod(fftLen - hop * i - fftLen / 2 - 1, fftLen);
+    phaseShifter = exp(-1i * stepSize * (2*pi*(0:halfLen-1)/fftLen)');
+    q_fft_frameinv = ltv_1st_2ndNoSq2(phaseShifter, b, a, c1, c2, prepad, pospad, corrF, halfLen);
+    %% Inverse transform
+    % Virtually multiplying Hann window in time domain on frequency domain
+    if reqSynthesisWnd
+        q_fft_frameinv = 0.25 * (2 * q_fft_frameinv + [conj(q_fft_frameinv(2)); q_fft_frameinv(1 : end - 1)] + [q_fft_frameinv(2 : end); conj(q_fft_frameinv(end - 1))]);
+    end
+    % Reflect spectrum and conjugate
+    q_fft_frameinv(halfLen+1:fftLen,:) = conj(q_fft_frameinv(halfLen-1:-1:2,:));
+    yInvShifted = ifftshift(ifft(q_fft_frameinv)).';
+    tmp(:, i) = yInvShifted;
+end
+systemImpulse = overlapAdd(tmp, hop);
+systemImpulse = systemImpulse(1 : fftLen - hop);
+if hop ~= fftLen / 2
+    truncatedSystemImpulse = [systemImpulse((fftLen - hop) - (fftLen/2) : end)];
+else
+    truncatedSystemImpulse = [0; systemImpulse];
+end
+truncatedSystemImpulse = [truncatedSystemImpulse; truncatedSystemImpulse(halfLen - 1: -1 : 1)];
+truncatedSystemImpulse(1) = [];
+truncatedSystemImpulse = fft(truncatedSystemImpulse);
+truncatedSystemImpulse = abs(truncatedSystemImpulse(1 : halfLen));
+if flat
+    truncatedSystemImpulse(:) = mean(truncatedSystemImpulse);
+end
+corrF = 1 ./ truncatedSystemImpulse;
+wndCorrectionWeighting = [];
+correctionWndHF = [];
+theoreticalWindowShape = [];
+if hop ~= 1
+    %% Obtain DFT filterbank frequency response
+    if order == 2
+        h = (cplxFreq .* cplxFreq .* b(:)) ./ (cplxFreq .* (cplxFreq + a(:, 2)) + a(:, 3));
+    else
+        h = (cplxFreq .* a(:)) ./ (cplxFreq - (1 - a(:)));
+    end
+    h2 = (h .* conj(h)) .* chopedWnd.';
+    if reqSynthesisWnd
+        h2 = h2 .* chopedWnd.';
+    end
+    theoreticalWindowShape = [zeros(size(thetas1, 2), 1), h2(:, (halfLen-1):-1:2), h2];
+    theoreticalWindowShape = theoreticalWindowShape(prepad + 1 : end - pospad + 1, :);
+    theoreticalWindowShape = theoreticalWindowShape .* corrF;
+    dftMtx = dftmtx(fftLen);
+    dftMtx = dftMtx(1 : halfLen, :);
+    cpxRes = fft( (theoreticalWindowShape .* dftMtx)' );
+    cpxRes = cpxRes(1 : halfLen, :);
+    dftFilterbank2 = cpxRes .* conj(cpxRes);
+    overallShapeOfWeighting = mean(dftFilterbank2, 1)';
+    [~, idx] = max(overallShapeOfWeighting);
+    overallShapeOfWeighting(idx + 1 : end) = overallShapeOfWeighting(idx);
+    overallShapeOfWeighting = overallShapeOfWeighting - min(overallShapeOfWeighting);
+    if max(overallShapeOfWeighting) ~= 0
+        overallShapeOfWeighting = overallShapeOfWeighting ./ max(overallShapeOfWeighting);
+    end
+    %% Obtain window correction
+    correctionWndHF = overlapAdd(repmat(theoreticalWindowShape(end, :), ovp * 2, 1 )', hop);
+    correctionWndHF = correctionWndHF(fftLen - hop + 1 : fftLen * 2 - hop);
+    % The first window in constant-Q scale is widest
+    if sum(theoreticalWindowShape(1, :) ./ max(theoreticalWindowShape(1, :))) < (fftLen / 5)
+        error('Heavily undersampling');
+    end
+    correctionWndHF = 1 ./ correctionWndHF(:);
+    %% Plot result after overlap-add
+    if order == 2
+        wndCorrectionWeighting = max(b(prepad + 1 : end - pospad + 1, :)) - b(prepad + 1 : end - pospad + 1, :);
+    else
+        wndCorrectionWeighting = max(a(prepad + 1 : end - pospad + 1, :)) - a(prepad + 1 : end - pospad + 1, :);
+    end
+    wndCorrectionWeighting = wndCorrectionWeighting - min(wndCorrectionWeighting);
+    if max(wndCorrectionWeighting) ~= 0
+        wndCorrectionWeighting = wndCorrectionWeighting ./ max(wndCorrectionWeighting);
+    end
+    fnc = @(x) fitExp(wndCorrectionWeighting, overallShapeOfWeighting, x);
+    pwr = fmincon(fnc, 1, [], [], [], [], eps, Inf, [], optimoptions('fmincon','Algorithm','trust-region-reflective','SpecifyObjectiveGradient',true,'HessianFcn','objective','Display','iter'));
+    wndCorrectionWeighting = 1 - (wndCorrectionWeighting .^ pwr);
+    %% Iterative correction of window frequency weighting to further maximize SNR
+    %% Generate chirp
+    D = fftLen / fs;            % duration in seconds
+    t = (0:fftLen-1) / fs;         % discrete-time axis (sec)
+    f1 = 1 * fs / fftLen;
+    f2 = halfLen * fs / fftLen;
+    bandlimitChirp = chirp2(t, D, f1, f2)';
+    %% Heuristics iterative correction of window frequency weighting to further maximize SNR
+    maxIter = 100;
+    bandlimitChirpPadded = [zeros(fftLen - hop, 1); bandlimitChirp; zeros(fftLen / 2, 1)];
+    nframes = ovp * 2 - 1;
+    % zero padding at the end to complete the last frame
+    paddedLen = hop * nframes;
+    bandlimitChirpPadded = [bandlimitChirpPadded; zeros(length(bandlimitChirpPadded) - paddedLen + hop * 3, 1)];
+    frmIdx = 1 + (0 : nframes - 1) * hop;
+    sht = fix(hop / 2);
+    previousError = Inf;
+    wndCorrectionWeightingPrev = wndCorrectionWeighting;
+    kDeltaTFR = zeros(halfLen, ovp - 1);
+    kDeltaTFRHFWnd = zeros(halfLen, ovp - 1);
+    chirpTFR = zeros(halfLen, (ovp - 1) * 2);
+    chirpTFRHFWnd = zeros(halfLen, (ovp - 1) * 2);
+    for i = 1 : ovp * 2 - 1
+        if i <= ovp - 1
+            stepSize = mod((fftLen - hop * i - fftLen / 2 - 1) - sht, fftLen);
+            phaseShifter = exp(-1i * stepSize * (2*pi*(0:halfLen-1)/fftLen)');
+            q_fft_frameinv = ltv_1st_2ndNoSq2(phaseShifter, b, a, c1, c2, prepad, pospad, corrF, halfLen);
+            if reqSynthesisWnd
+                q_fft_frameinv = 0.25 * (2 * q_fft_frameinv + [conj(q_fft_frameinv(2)); q_fft_frameinv(1 : end - 1)] + [q_fft_frameinv(2 : end); conj(q_fft_frameinv(end - 1))]);
+            end
+            kDeltaTFR(:, i) = q_fft_frameinv;
+            q_fft_frameinv(halfLen+1:fftLen) = conj(q_fft_frameinv(halfLen-1:-1:2));
+            correctedTime = ifft(q_fft_frameinv);
+            correctedTime2 = correctedTime .* correctionWndHF;
+            getbackCorrectedToSpectrum1 = fft(correctedTime2);
+            kDeltaTFRHFWnd(:, i) = getbackCorrectedToSpectrum1(1 : halfLen);
+        end
+        frame = bandlimitChirpPadded(frmIdx(i) : frmIdx(i) + fftLen - 1);
+        X = fft(fftshift(frame));
+        chirpSpectrum = ltv_1st_2ndNoSq2(X(1 : halfLen), b, a, c1, c2, prepad, pospad, corrF, halfLen);
+        if reqSynthesisWnd
+            chirpSpectrum = 0.25 * (2 * chirpSpectrum + [conj(chirpSpectrum(2)); chirpSpectrum(1 : end - 1)] + [chirpSpectrum(2 : end); conj(chirpSpectrum(end - 1))]);
+        end
+        chirpTFR(:, i) = chirpSpectrum;
+        chirpSpectrum(halfLen+1:fftLen) = conj(chirpSpectrum(halfLen-1:-1:2));
+        correctedTime = ifft(chirpSpectrum);
+        correctedTime2 = correctedTime .* correctionWndHF;
+        getbackCorrectedToSpectrum2 = fft(correctedTime2);
+        chirpTFRHFWnd(:, i) = getbackCorrectedToSpectrum2(1 : halfLen);
+    end
+    for it = 1 : maxIter
+        % Overlap the approximation of system impulse
+        q_fft_frameinv = kDeltaTFR .* wndCorrectionWeighting + kDeltaTFRHFWnd .* (1 - wndCorrectionWeighting);
+        q_fft_frameinv(halfLen+1:fftLen,:) = conj(q_fft_frameinv(halfLen-1:-1:2,:));
+        tmp = circshift(ifft(q_fft_frameinv), fftLen / 2);
+        systemImpulse = circshift(overlapAdd(tmp, hop), sht);
+        systemImpulse(1 : sht) = 0;
+        systemImpulse = systemImpulse(1 : fftLen - hop);
+        if hop ~= fftLen / 2
+            truncatedSystemImpulse = [systemImpulse((fftLen - hop) - (fftLen/2) : end)];
+        else
+            truncatedSystemImpulse = [0; systemImpulse];
+        end
+        % Overlap the approximation of chirp signal
+        chirpSpectrum = chirpTFR .* wndCorrectionWeighting + chirpTFRHFWnd .* (1 - wndCorrectionWeighting);
+        % Reflect spectrum and conjugate
+        chirpSpectrum(halfLen+1:fftLen,:) = conj(chirpSpectrum(halfLen-1:-1:2,:));
+        tmp = circshift(ifft(chirpSpectrum), fftLen / 2);
+        chirpRec = overlapAdd(tmp, hop);
+        % Enforce symmetry at centre
+        truncatedSystemImpulse = [truncatedSystemImpulse; truncatedSystemImpulse(halfLen - 1: -1 : 1)];
+        % SAE of chirp signal
+        err = chirpRec(fftLen - hop + 1 : fftLen * 2 - hop) - bandlimitChirp;
+        errorCurr = sum(abs(err));
+        if errorCurr >= previousError
+            wndCorrectionWeighting = wndCorrectionWeightingPrev;
+            break;
+        else
+            previousError = errorCurr;
+            % disp('iteration = ' + string(it) + ', error = ' + sprintf('%1.14f', errorCurr))
+        end
+        truncatedSystemImpulse(1) = [];
+        truncatedSystemImpulse = fft(truncatedSystemImpulse);
+        truncatedSystemImpulse = abs(truncatedSystemImpulse(1 : halfLen));
+        truncatedSystemImpulse = truncatedSystemImpulse - 1;
+        truncatedSystemImpulse(truncatedSystemImpulse < 0) = 0;
+        truncatedSystemImpulse(1) = 0;
+        truncatedSystemImpulse(firstUndersampling * 2 + 1 : end) = 0;
+        wndCorrectionWeightingPrev = wndCorrectionWeighting;
+        wndCorrectionWeighting = wndCorrectionWeighting + truncatedSystemImpulse;
+        wndCorrectionWeighting(wndCorrectionWeighting < 0) = 0;
+    end
+    %%
+    %     wndCorrectionWeightingLF = wndCorrectionWeighting;
+    %     wndCorrectionWeightingHF = 1 - wndCorrectionWeightingLF;
+    %% Gradient based optimization
+    shiftedChirp1 = circshift(bandlimitChirp, fix(hop / 2));
+    if ~isempty(firstUndersampling)
+        bandlimitChirp2 = circshift(chirp2(t, D, f(2), (firstUndersampling * 2) * fs / fftLen), -fix(hop / 4))';
+    else
+        bandlimitChirp2 = circshift(chirp2(t, D, f(2), fs / 2 - f(2)), -fix(hop / 4))';
+    end
+    coeff.prepad = prepad;
+    coeff.pospad = pospad;
+    coeff.b = b;
+    coeff.a = a;
+    coeff.c1 = c1;
+    coeff.c2 = c2;
+    coeff.phaseShifter1 = phaseShifter1;
+    coeff.phaseShifter2 = phaseShifter2;
+    coeff.phaseShifter3 = phaseShifter3;
+    coeff.corrF = corrF;
+    coeff.fftLen = fftLen;
+    coeff.halfLen = halfLen;
+    coeff.hop = hop;
+    coeff.fs = fs;
+    [spec1, t_q] = ltv_spectrogram2(bandlimitChirp, coeff);
+    [spec2, t_q] = ltv_spectrogram2(shiftedChirp1, coeff);
+    [spec3, t_q] = ltv_spectrogram2(bandlimitChirp2, coeff);
+    S1 = spec1(:, :);
+    S2 = spec2(:, :);
+    S3 = spec3(:, :);
+    if reqSynthesisWnd
+        S1 = 0.25 * (2 * S1 + [conj(S1(2, :)); S1(1 : end - 1, :)] + [S1(2 : end, :); conj(S1(end - 1, :))]);
+        S2 = 0.25 * (2 * S2 + [conj(S2(2, :)); S2(1 : end - 1, :)] + [S2(2 : end, :); conj(S2(end - 1, :))]);
+        S3 = 0.25 * (2 * S3 + [conj(S3(2, :)); S3(1 : end - 1, :)] + [S3(2 : end, :); conj(S3(end - 1, :))]);
+    end
+    S1(halfLen+1:fftLen,:) = conj(S1(halfLen-1:-1:2,:));
+    S2(halfLen+1:fftLen,:) = conj(S2(halfLen-1:-1:2,:));
+    S3(halfLen+1:fftLen,:) = conj(S3(halfLen-1:-1:2,:));
+    STime1 = ifft(S1);
+    STime2 = ifft(S2);
+    STime3 = ifft(S3);
+    wndCorrectionWeightingLF = wndCorrectionWeighting;
+    wndCorrectionWeightingHF = 1 - wndCorrectionWeightingLF;
+    weights1 = [wndCorrectionWeightingLF; wndCorrectionWeightingHF];
+    getbackCorrectedToSpectrum1 = fft(STime1 .* correctionWndHF);
+    getbackCorrectedToSpectrum2 = fft(STime2 .* correctionWndHF);
+    getbackCorrectedToSpectrum3 = fft(STime3 .* correctionWndHF);
+    sigs = cell(3, 1);
+    pack.S = S1;
+    pack.SRe = real(S1(1:halfLen, :));
+    pack.SIm = imag(S1(1:halfLen, :));
+    pack.getbackCorrectedToSpectrum = getbackCorrectedToSpectrum1;
+    pack.getbackCorrectedToSpectrumRe = real(getbackCorrectedToSpectrum1(1:halfLen, :));
+    pack.getbackCorrectedToSpectrumIm = imag(getbackCorrectedToSpectrum1(1:halfLen, :));
+    pack.target = bandlimitChirp;
+    sigs{1, 1} = pack;
+    pack.S = S2;
+    pack.SRe = real(S2(1:halfLen, :));
+    pack.SIm = imag(S2(1:halfLen, :));
+    pack.getbackCorrectedToSpectrum = getbackCorrectedToSpectrum2;
+    pack.getbackCorrectedToSpectrumRe = real(getbackCorrectedToSpectrum2(1:halfLen, :));
+    pack.getbackCorrectedToSpectrumIm = imag(getbackCorrectedToSpectrum2(1:halfLen, :));
+    pack.target = shiftedChirp1;
+    sigs{2, 1} = pack;
+    pack.S = S3;
+    pack.SRe = real(S3(1:halfLen, :));
+    pack.SIm = imag(S3(1:halfLen, :));
+    pack.getbackCorrectedToSpectrum = getbackCorrectedToSpectrum3;
+    pack.getbackCorrectedToSpectrumRe = real(getbackCorrectedToSpectrum3(1:halfLen, :));
+    pack.getbackCorrectedToSpectrumIm = imag(getbackCorrectedToSpectrum3(1:halfLen, :));
+    pack.target = bandlimitChirp2;
+    sigs{3, 1} = pack;
+    func1 = @(x) singleWndSplitLFHF(x, halfLen, fftLen, hop, sigs);
+    func3 = @(x) singleWndSplitLFHFFast(x, halfLen, fftLen, hop, sigs);
+    [fval, grad] = func1(weights1);
+    opt.optTol = 1e-14;
+    opt.progTol = 1e-14;
+    opt.MaxIter = 1000;
+    opt.MaxFunEvals = opt.MaxIter * 100;
+    opt.Method = 'pnewton0';
+    dbg = 1;
+    if dbg
+        weightsOpt = minFunc(func1, weights1, opt);
+        coeff.wndCorrectionWeightingLF = movmedian(weightsOpt(1 : halfLen), 10);
+        coeff.wndCorrectionWeightingHF = movmedian(weightsOpt(halfLen + 1 : halfLen + halfLen), 10);
+    else
+        load('matlab.mat');
+    end
+    %%
+    wndCorrectionWeightingLF = coeff.wndCorrectionWeightingLF;
+    wndCorrectionWeightingHF = coeff.wndCorrectionWeightingHF;
+    %% DFT and IDFT matrix
+    Wdft = fft(eye(fftLen));
+    WdftRe = real(Wdft(1 : halfLen, :));
+    WdftIm = imag(Wdft(1 : halfLen, :));
+    Winvdft = conj(Wdft) / fftLen;
+    WinvdftRe = real(Winvdft);
+    WinvdftIm = imag(Winvdft); WinvdftIm(:, halfLen + 1 : end) = -WinvdftIm(:, halfLen + 1: end);
+    %% Optimization parameters
+    opt.optTol = eps;
+    opt.progTol = eps;
+    opt.MaxIter = 1000;
+    opt.MaxFunEvals = opt.MaxIter * 2;
+    opt.Method = 'pnewton0';
+    %% Optimize real matrix to achieve PR
+    usePostFFTCorrWnd = 1;
+    %% Prepare signals
+    cpLen=2*fs;D = cpLen / fs;t = (0:cpLen-1) / fs;f1 = 1 * fs / fftLen;f2 = halfLen * fs / fftLen;longChirp = chirp2(t, D, f1, f2)';
+    numDemoSignal = 4;
+    sigs = cell(numDemoSignal, 1);
+    for idx = 1 : numDemoSignal
+        target = circshift(longChirp, fix((idx - 1) * (hop / numDemoSignal)));
+        [S1, t_q] = ltv_spectrogram2(target, coeff);
+        if reqSynthesisWnd
+            S1 = 0.25 * (2 * S1 + [conj(S1(2, :)); S1(1 : end - 1, :)] + [S1(2 : end, :); conj(S1(end - 1, :))]);
+        end
+        if usePostFFTCorrWnd
+            S1(halfLen+1:fftLen,:) = conj(S1(halfLen-1:-1:2,:));
+            STime1 = ifft(S1);
+            getbackCorrectedToSpectrum1 = fft(STime1 .* correctionWndHF);
+            S1 = S1(1 : halfLen, :) .* wndCorrectionWeightingLF + getbackCorrectedToSpectrum1(1 : halfLen, :) .* wndCorrectionWeightingHF;
+        end
+        pack.SRe = real(S1);
+        pack.SIm = imag(S1);
+        pack.target = target;
+        sigs{idx} = pack;
+    end
+%     cqLC = [zeros(fftLen - hop, 1); longChirp; zeros(fftLen - hop, 1)];
+    %%
+    func1 = @(x) corrRealMtx(x, halfLen, fftLen, hop, sigs, WinvdftRe, WinvdftIm, []);
+    func2 = @(x) corrRealMtxFast(x, halfLen, fftLen, hop, sigs, []);
+    identity = eye(halfLen); identity = identity(:);
+    [fval1, grad1, preview1] = func1(identity);
+    [fval2, grad2, preview2] = func2(identity);
+%     tic
+%     weightsOpt1 = minFunc(func1, identity, opt);
+%     toc
+%     tic
+    weightsOpt2 = minFunc(func2, identity, opt);
+%     toc
+    %% Optimize complex matrix to achieve PR
+    identity = [eye(halfLen), eye(halfLen)]; identity = identity(:);
+    func3 = @(x) corrCplxMtx(x, halfLen, fftLen, hop, sigs, WinvdftRe, WinvdftIm, []);
+    [fval3, grad3, preview3] = func3(identity);
+%     grad3 = reshape(grad3, halfLen, halfLen * 2);
+    tic
+    weightsOpt3 = minFunc(func3, identity, opt);
+    toc
+    func4 = @(x) corrCplxMtxFast(x, halfLen, fftLen, hop, sigs, []);
+    [fval4, grad4, preview4] = func4(identity);
+%     grad4 = reshape(grad4, halfLen, halfLen * 2);
+    tic
+    weightsOpt4 = minFunc(func4, identity, opt);
+    toc
+    correctionMatrix = [];
+else
+    correctionMatrix = [];
+end
+%% Save coefficient
+coeff.correctionMatrix = correctionMatrix;
+coeff.prepad = prepad;
+coeff.pospad = pospad;
+coeff.b = b;
+coeff.a = a;
+coeff.c1 = c1;
+coeff.c2 = c2;
+coeff.phaseShifter1 = phaseShifter1;
+coeff.phaseShifter2 = phaseShifter2;
+coeff.phaseShifter3 = phaseShifter3;
+coeff.corrF = corrF;
+coeff.corrS = corrS;
+coeff.correctionWnd = correctionWndHF;
+coeff.wndCorrectionWeighting = wndCorrectionWeighting;
+coeff.fftLen = fftLen;
+coeff.halfLen = halfLen;
+coeff.hop = hop;
+coeff.fs = fs;
+coeff.theoreticalWindowShape = theoreticalWindowShape;
+end
+function [S, t] = ltv_spectrogram2(x, coeff)
+x = x(:);
+x = [zeros(coeff.fftLen - coeff.hop, 1); x; zeros(coeff.fftLen / 2, 1)];
+ny = length(x);
+nframes = fix(ceil(ny/coeff.hop) - coeff.fftLen / coeff.hop / 2);
+% zero padding at the end to complete the last frame
+paddedLen = coeff.hop * nframes;
+x = [x; zeros(length(x) - paddedLen + coeff.hop * 2, 1)];
+frmIdx = 1 + (0 : nframes - 1) * coeff.hop;
+% matrix to store the complex spectrogram
+S = zeros(nframes, coeff.fftLen/2+1, 'like', 1i);
+%% IIR LTV Q FFT transform
+for i=1:nframes
+    frame = x(frmIdx(i) : frmIdx(i) + coeff.fftLen - 1);
+    X = fft(fftshift(frame));
+    S(i, :) = ltv_1st_2ndNoSq2(X(1 : coeff.halfLen), coeff.b, coeff.a, coeff.c1, coeff.c2, coeff.prepad, coeff.pospad, coeff.corrF, coeff.halfLen);
+end
+t = (frmIdx - 1 + coeff.fftLen / 2) / coeff.fs;
+S = permute(S, [2, 1, 3]);
+end
+function spec = ltv_1st_2ndNoSq2(dftSpec, b, a, c1, c2, prepad, pospad, corrF, halfLen)
+%% Hann in frequency domain with input being shifted by fftshift
+specHann = 2 * dftSpec + [conj(dftSpec(2)); dftSpec(1 : end - 1)] + [dftSpec(2 : end); conj(dftSpec(end - 1))];
+%% Hann in frequency domain with 1 sample delayed input being shifted by fftshift
+% Hann windowed
+x_fft1 = [conj(specHann(prepad + 1 : -1 : 2, :)); specHann; conj(specHann(halfLen - 1 : -1 : (halfLen - pospad + 1), :))] / 4;
+% Rectangular windowed
+% x_fft1 = [conj(dftSpec(prepad + 1 : -1 : 2, :)); dftSpec; conj(dftSpec(halfLen - 1 : -1 : (halfLen - pospad + 1), :))];
+%% Gaussian windowing
+tmp = zeros(size(x_fft1, 1), 1, 'like', x_fft1);
+q_fft_frame = ltv1Slice(x_fft1, tmp, b, a, c1, c2);
+% Remove periodic padding
+spec = q_fft_frame(prepad + 1 : end - pospad + 1);
+if ~isempty(corrF)
+    spec = spec .* corrF;
+end
+spec(1, :) = real(spec(1, :));
+spec(end, :) = real(spec(end, :));
+end
+function halfLen = getFFTHalfLen(fftLen)
+if mod(fftLen, 2) == 0
+    halfLen = (fftLen / 2) + 1;
+else
+    halfLen = (fftLen + 1) / 2;
+end
+end
+function x = chirp2(t,t1,f0,f1)
+beta = (f1-f0)./t1;
+x = cos(2*pi * ( 0.5* beta .* (t .* t) + f0 * t));
+end

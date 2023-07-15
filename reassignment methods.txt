@@ -1,0 +1,29 @@
+frame, frameshift1sample
+hannwindow, hannwindow
+fftshift, fftshift
+fft, fft
+subwindows(freq), subwindows(freq)
+
+frame, frameshift1sample
+fft, fft
+hannwindow(freq), hannwindow(freq)
+fftshift(freq), fftshift(freq)
+subwindows(freq), subwindows(freq)
+
+frame
+fft
+hannwindow(freq), shift1sample+hannwindow(freq)
+fftshift(freq), fftshift(freq)
+subwindows(freq), subwindows(freq)
+
+frame
+fftshift
+fft
+hannwindow(freq), shift1sample+hannwindow(freq)
+subwindows(freq), subwindows(freq)
+
+frame
+fftshift
+fft
+subwindows(freq), shift1sample+subwindows(freq)
+hannwindow(freq), hannwindow(freq)

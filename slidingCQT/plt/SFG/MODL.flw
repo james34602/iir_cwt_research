@@ -1,0 +1,11 @@
+*Lth order pure differentiation delta-sigma
+in 10 H^L
+10 out 1
+out in -1
+
+.pre syms z L
+.pre H=1/(z-1);
+*.pre k=1;
+.tf in out
+.tf out out
+*.post z=tf('z',1);
