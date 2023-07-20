@@ -41,12 +41,3 @@ for a = 1:stepSize:length(temp)-windowSize
     c = c+1;
 end
 end
-function o = idealHann(len)
-for a = 1:len*4
-    o(a) = cos(a/len.*pi);
-end
-o = o-min(o);
-o = o./max(o);
-o = o(len+1:2:len*3);
-o = o.';
-end
