@@ -1,19 +1,30 @@
-dim1 = 5; dim3 = 4; %[5, 2], [6, 3]
-dim2 = 1;
-fftLen = coeffCollection{dim1, dim2, dim3}.fftLen;
-hop = coeffCollection{dim1, dim2, dim3}.hop;
-oct = coeffCollection{dim1, dim2, dim3}.oct;
+dim1 = 6; dim2 = 3; %[5, 2], [6, 3]
+fftLen = coeffCollection{dim1, dim2}.fftLen;
+hop = coeffCollection{dim1, dim2}.hop;
+oct = coeffCollection{dim1, dim2}.oct;
 halfLen = fftLen / 2 + 1;
-HFSamplingLimit = coeffCollection{dim1, dim2, dim3}.HFSamplingLimit;
+HFSamplingLimit = coeffCollection{dim1, dim2}.HFSamplingLimit;
 order = 2;
 % numberOfVirtualBands = 10 * oct + 1
 % Q = (sqrt(2 ^ (1 / oct)) / ((2 ^ (1 / oct)) - 1))
 % disp('Calculating STFT Spectrogram.')
-[x, fs] = loadSignal(5, fftLen);
+[x, fs] = loadSignal(7, fftLen);
+% x = x(1 : 10000);
+%% Textbook Morlet CWT
+% VoicesPerOctave = 48;
+% fb = cwtfilterbank(SignalLength=length(x),Boundary="periodic",WaveletParameters=[2,80],VoicesPerOctave=VoicesPerOctave);
+% psif = freqz(fb,FrequencyRange="twosided",IncludeLowpass=true);
+% [cfs,~,~,scalcfs] = fb.wt(x);
+% imagesc(log10(abs(cfs) + eps))
+% xrecAN = ICWT_DualFrame(cfs, psif, scalcfs); % Dual frame form
+% xrecSI = icwt(cfs,[],ScalingCoefficients=scalcfs); % Single integral form
+% SNR_CWT_FIRLiked_AnalysisSynthesis = 10*log10(sum(abs(x).^2)/sum(abs(x-xrecAN').^2))
+% SNR_CWT_SingleIntegral = 10*log10(sum(abs(x).^2)/sum(abs(x-xrecSI').^2))
+%% Back to frame-based CWT
 % x = [zeros(fftLen + fix(hop / 2), 1); x; zeros(fftLen, 1)];
-coeff = coeffCollection{dim1, dim2, dim3}.coeff;
-f_q = coeffCollection{dim1, dim2, dim3}.f_q;
-sparCutOff = 1e-7;
+coeff = coeffCollection{dim1, dim2}.coeff;
+f_q = coeffCollection{dim1, dim2}.f_q;
+sparCutOff = 1e-10;
 gWeights = abs(coeff.correctionMatrix) > sparCutOff;
 sparsity = 1 - sum(gWeights(:)) / numel(coeff.correctionMatrix)
 disp('Calculating IIR CQT Spectrogram.')
@@ -34,9 +45,9 @@ if inverseOvp
     %     editing(500 : 1200, 120 : 178) = 0;
     %     editedBk = editing;
     if isfield(coeff, 'wndCorrectionWeightingLF') && ~isempty(coeff.correctionMatrix)
-        y = ltv_inverse2(editing, fftLen, hop, reqSynthesisWnd, coeff.correctionWnd, coeff.wndCorrectionWeightingLF, coeff.wndCorrectionWeightingHF, coeff.correctionMatrix, coeff.prepad, coeff.pospad);
+        y = ltv_inverse2(editing, fftLen, hop, 1, coeff.correctionWnd, coeff.wndCorrectionWeightingLF, coeff.wndCorrectionWeightingHF, coeff.correctionMatrix, coeff.prepad, coeff.pospad);
     elseif isfield(coeff, 'wndCorrectionWeightingLF')
-        y = ltv_inverse1(editing, fftLen, hop, reqSynthesisWnd, coeff.correctionWnd, coeff.wndCorrectionWeightingLF, coeff.wndCorrectionWeightingHF);
+        y = ltv_inverse1(editing, fftLen, hop, 1, coeff.correctionWnd, coeff.wndCorrectionWeightingLF, coeff.wndCorrectionWeightingHF);
     end
     y = y(:);
     y = y(fftLen - hop + 1 : end);
