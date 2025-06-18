@@ -49,3 +49,8 @@ Link：[https://pan.baidu.com/s/14qUPAxsxLeBW1LjoNAea4A?pwd=uppl]()
 
 1. I often refer to the CQT (Constant-Q Transform) as CWT. This should be acceptable, as all continuous-scale, multi-resolution transforms are forms of the CWT. The CQT is similar to the Morlet CWT, and the Q-factor parameter in CQT is analogous to the tunable time-bandwidth product parameter in the Morlet wavelet.
 2. It took a month to write the derivative formulas and test code for the time-varying SVF filtering...
+
+**Important Notice:** 
+
+* **Commercial use of this project is strictly prohibited.**
+*  **Redistribution of modified versions of this project without explicit permission is prohibited.**
