@@ -92,8 +92,41 @@ classdef ADNode < handle
         function y = cos(x)
             y = ADNode(cos(x.value), x.root, @(y) x.add(bsxfun(@times, -y.grad, sin(x.value))));
         end
+        function backprop_soft_well(x, lower, upper, scale, y, lg, d_low, d_high)
+            if lg == true
+                deriv = 2 * d_low ./ (scale^2 + d_low.^2) - 2*d_high ./ (scale^2 + d_high.^2);
+            else
+                deriv = -(2 * (lower + upper - 2 * x.value)) / scale^2;
+            end
+            x.add(y.grad .* deriv);
+        end
+        function y = soft_well(x, lower, upper, scale, lg)
+            xv = x.value;
+            mid_dist = (upper - lower) / 2;
+            d_low = xv - lower;
+            d_high = upper - xv;
+            if lg == true
+                bf_i = log(1 + (d_low / scale).^2) + log(1 + (d_high / scale).^2);
+                C_i = 2 * log(1 + (mid_dist / scale).^2);
+            else
+                bf_i = (1 + (d_low / scale).^2) + (1 + (d_high / scale).^2);
+                C_i = 2 * (1 + (mid_dist / scale).^2);
+            end
+            bf = bf_i - C_i;
+            y = ADNode(bf, x.root, @(y) backprop_soft_well(x, lower, upper, scale, y, lg, d_low, d_high));
+        end
+
+        function backprop_sinc(x, y, i)
+            val = cos(pi * x.value) ./ x.value - sin(pi * x.value) ./ ((x.value.^2) * pi);
+            val(i) = 0;
+            x.add(bsxfun(@times, y.grad, val));
+        end
         function y = sinc(x)
-            y = ADNode(sinc(x.value), x.root, @(y) x.add(bsxfun(@times, y.grad, cos(pi * x.value) ./ x.value - sin(pi * x.value) ./ ((x.value.^2) * pi))));
+            tmp = x.value;
+            i = find(tmp == 0);
+            out = sin(pi*tmp)./(pi*tmp);
+            out(i) = 1;
+            y = ADNode(out, x.root, @(y) backprop_sinc(x, y, i));
         end
         function backprop_atan2(x1, x2, y)
             x1.add(y.grad .* x2.value ./ (x1.value .* x1.value + x2.value .* x2.value));
@@ -110,7 +143,165 @@ classdef ADNode < handle
                 y = ADNode(atan2(x1, x2.value), x2.root, @(y) x2.add(y.grad .* -x1 ./ (x1 .* x1 + x2.value .* x2.value)));
             end
         end
+        function y = magPhaseCplx(mag, phi)
+            % f(mag,phi) = mag .* exp(1j*phi)
+            %
+            % This overload handles three cases:
+            % 1) both mag and phi are ADNode
+            % 2) only mag is ADNode (phi is constant)
+            % 3) only phi is ADNode (mag is constant)
+            %
+            % In all cases, the “root” pointer is taken from whichever input is an ADNode.
+            if isa(mag, 'ADNode') && isa(phi, 'ADNode')
+                % both are ADNode
+                E = exp(1j * phi.value);
+                val = mag.value .* E;
+                y = ADNode(val, mag.root, @(y) backprop_magPhaseCplx(mag, phi, y, E));
+            elseif isa(mag, 'ADNode')
+                % mag is ADNode, phi is a plain scalar (or array)
+                val = mag.value .* exp(1j * phi);
+                y = ADNode(val, mag.root, @(y) mag.add(y.grad .* exp(1j * phi)));
+            elseif isa(phi, 'ADNode')
+                % phi is ADNode, mag is a plain scalar (or array)
+                val = mag .* exp(1j * phi.value);
+                y = ADNode(val, phi.root, @(y) phi.add(y.grad .* (mag .* 1j .* exp(1j * phi.value))));
+            else
+                % neither is an ADNode → constant output; no gradients attached
+                y = mag .* exp(1j * phi);
+            end
+        end
+        function backprop_magPhaseCplx(mag, phi, y, E)
+            % “Push‐back” for y = mag .* exp(1j * phi)
+            %   ∂y/∂mag =          exp(jφ)
+            %   ∂y/∂φ   = mag .* j .* exp(jφ)
+            %
+            % y.grad is ∂L/∂y coming from upstream; we multiply by the local Jacobians
+            %
+            % Note: mag.value and phi.value are the stored forward values, so
+            %       exp(1j*phi.value) was computed in the forward pass.
+            % ∂L/∂mag += (∂L/∂y) .* (∂y/∂mag)  = y.grad .* E
+            mag.add(y.grad .* E);
+            % ∂L/∂φ   += (∂L/∂y) .* (∂y/∂φ)    = y.grad .* (mag.value .* j .* E)
+            phi.add(y.grad .* (mag.value .* 1j .* E));
+        end
+        %===============================================
+        % 1) Hard floor / round / ceil (zero‐gradient)
+        %===============================================
 
+        function y = floor(x)
+            xv = x.value;
+            out = floor(xv);
+            y   = ADNode(out, x.root, @(y) backprop_floor(x, y));
+        end
+        function backprop_floor(x, y)
+            % d floor(x)/dx = 0 almost everywhere
+            x.add( zeros(size(x.value)) );
+        end
+
+        function y = round(x)
+            xv = x.value;
+            out = round(xv);
+            y   = ADNode(out, x.root, @(y) backprop_round(x, y));
+        end
+        function backprop_round(x, y)
+            % d round(x)/dx = 0 almost everywhere
+            x.add( zeros(size(x.value)) );
+        end
+
+        function y = ceil(x)
+            xv = x.value;
+            out = ceil(xv);
+            y   = ADNode(out, x.root, @(y) backprop_ceil(x, y));
+        end
+        function backprop_ceil(x, y)
+            % d ceil(x)/dx = 0 almost everywhere
+            x.add( zeros(size(x.value)) );
+        end
+
+
+        %===============================================
+        % 2) Smooth floor / round / ceil via trig‐saw
+        %===============================================
+
+        function y = floor_smooth(x, delta)
+            % wrapper for [yf, dyf] = floor_smooth_trig(x, delta)
+            xv = x.value;
+            [yf, dyf] = floor_smooth_trig(xv, delta);
+            y = ADNode(yf, x.root, @(y) backprop_floor_smooth(x, y, dyf));
+        end
+        function backprop_floor_smooth(x, y, dyf)
+            % x.add( y.grad .* dyf )
+            x.add( y.grad .* dyf );
+        end
+
+        function y = round_smooth(x, delta)
+            % round_smooth(x) = floor_smooth(x + 0.5)
+            xv = x.value;
+            [yf, dyf] = floor_smooth_trig(xv + 0.5, delta);
+            y = ADNode(yf, x.root, @(y) backprop_round_smooth(x, y, dyf));
+        end
+        function backprop_round_smooth(x, y, dyf)
+            % d/dx floor_smooth(x+0.5) = dyf * 1
+            x.add( y.grad .* dyf );
+        end
+
+        function y = ceil_smooth(x, delta)
+            % ceil_smooth(x) = -floor_smooth(-x)
+            xv = x.value;
+            [yf, dyf] = floor_smooth_trig(-xv, delta);
+            out = -yf;
+            y = ADNode(out, x.root, @(y) backprop_ceil_smooth(x, y, dyf));
+        end
+        function backprop_ceil_smooth(x, y, dyf)
+            % d/dx [ -floor_smooth(-x) ] = -[ dyf * (-1) ] = dyf
+            x.add( y.grad .* dyf );
+        end
+        %===============================================
+        % 1) Hard anti‐wrap
+        %===============================================
+        function y = anti_wrap(x)
+            % Forward: y = abs( x - round(x/(2π))⋅2π )
+            xv       = x.value;
+            k        = round(xv/(2*pi));
+            residual = xv - k*(2*pi);
+            out      = abs(residual);
+            % Build ADNode, attach backprop
+            y = ADNode(out, x.root, @(y) backprop_anti_wrap(x, y));
+        end
+        function backprop_anti_wrap(x, y)
+            % Compute d/dx [ abs(x - round(x/(2π))⋅2π) ] = sign(residual)
+            xv       = x.value;
+            k        = round(xv/(2*pi));
+            residual = xv - k*(2*pi);
+            sgn      = sign(residual);   % MATLAB: sign(0)==0
+
+            % Chain rule
+            x.add( y.grad .* sgn );
+        end
+        %===============================================
+        % 2) Smooth anti‐wrap via floor_smooth_trig
+        %===============================================
+        function y = anti_wrap_smooth(x, delta)
+            xv       = x.value;
+            two_pi   = 2*pi;
+            z        = xv / two_pi;
+            % 1) smooth‐round: k_smooth ≈ round(z)
+            [k_smooth, dk_smooth] = floor_smooth_trig(z + 0.5, delta);
+            % 2) residual = x - 2π*k_smooth
+            residual = xv - two_pi * k_smooth;
+            % 3) output = abs(residual)
+            out = abs(residual);
+            % Wrap into ADNode
+            y = ADNode(out, x.root, @(y) backprop_anti_wrap_smooth(x, y, dk_smooth, residual));
+        end
+        function backprop_anti_wrap_smooth(x, y, dk_smooth, residual)
+            % d(residual)/dx = 1 - dk_smooth
+            dres_dx = 1 - dk_smooth;
+            % d|r|/dr = sign(residual)
+            sgn = sign(residual);
+            % chain
+            x.add( y.grad .* (sgn .* dres_dx) );
+        end
         %         function y = ff2(x, y)
         %             x.add(conj(y.grad));
         %         end
@@ -408,11 +599,15 @@ classdef ADNode < handle
         end
         function y = revWndAcc3D(x, y, frameSize, hop)
             tmp = y.grad;
+            % idealBufferOutLen = ceil((size(tmp, 1)-(frameSize - hop))/(frameSize-(frameSize - hop)));
+            requiredBufferOutLen = size(x, 2);
+            cutLen = ceil(size(tmp, 1) / hop) - requiredBufferOutLen;
             rec = zeros(frameSize, ceil(size(tmp, 1) / hop), size(tmp, 2));
             for idx = 1 : size(tmp, 2)
                 rec(:, :, idx) = buffer(tmp(:, idx), frameSize, frameSize - hop);
             end
-            cutted = rec(:, frameSize / hop : end, :);
+            % cutted = rec(:, frameSize / hop : end, :);
+            cutted = rec(:, cutLen + 1 : end, :);
             x.add(cutted);
         end
         function y = fold3D(x, frameSize, hop) % Sum sliding window
@@ -465,6 +660,10 @@ classdef ADNode < handle
         end
         function y = psi(k, x)
             y = ADNode(psi(k, x.value), x.root, @(y) x.add(bsxfun(@times, y.grad, psi(k + 1, x.value))));
+        end
+        function y = wrightOmega(x)
+            val = arrayfun(@wrightOmegaq, x.value);
+            y = ADNode(val, x.root, @(y) x.add(bsxfun(@times, y.grad, val ./ (val + 1))));
         end
 
         function y = uminus(x)
@@ -538,8 +737,8 @@ classdef ADNode < handle
             end
         end
         function backprog_pagemtimes(x1, x2, y, NFFT)
-			tmp = pagemtimes(y.grad, 'none', x2, 'transpose');
-			tmp2 = sum(tmp, 3);
+            tmp = pagemtimes(y.grad, 'none', x2, 'transpose');
+            tmp2 = sum(tmp, 3);
             x1.add(tmp2)
         end
         function y = pagemtimes(x1, x2)

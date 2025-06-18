@@ -1,0 +1,9 @@
+*delayed integrator
+*0 1 1
+1 2 z^(-1)
+2 1 1
+.pre syms z
+.tf 1 2
+*backwards it is delayless
+.tf 2 1
+.post z=tf('z',1);

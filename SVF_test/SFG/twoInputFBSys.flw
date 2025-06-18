@@ -1,0 +1,10 @@
+S1 S2 z^-1
+S2 S1 -1
+S2 S3 c
+S3 S4 k
+S4 S1 -a
+.pre syms z
+.pre c=1,a=1,k=1
+.tf S1 S4
+.tf S3 S4
+.post z=tf(‘z’,1)
